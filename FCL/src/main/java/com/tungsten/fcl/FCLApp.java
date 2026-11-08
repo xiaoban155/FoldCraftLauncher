@@ -22,6 +22,12 @@ public class FCLApp extends Application implements Application.ActivityLifecycle
         super.attachBaseContext(base);
         // 在 attachBaseContext 赋值，早于任何 Activity/ContentProvider，保证全局可用
         instance = this;
+        // 大肥鱼：尽早安装崩溃直写（放在 attachBaseContext，能捕获 Application.onCreate 之前就崩的情况）
+        try {
+            com.tungsten.fcl.dfy.DfyCrashLog.install(this);
+        } catch (Throwable ignored) {
+            // 记录器自身异常不能影响启动
+        }
     }
 
     @Override
@@ -29,9 +35,6 @@ public class FCLApp extends Application implements Application.ActivityLifecycle
         // enabledStrictMode();
         super.onCreate();
         this.registerActivityLifecycleCallbacks(this);
-        // 大肥鱼：把真实崩溃堆栈直写外部私有目录，避免 FCL 自带崩溃上报组件
-        // 因 FileProvider 跨进程授权失败而掩盖真实原因
-        com.tungsten.fcl.dfy.DfyCrashLog.install(this);
 //        PerfUtil.install();
     }
 
