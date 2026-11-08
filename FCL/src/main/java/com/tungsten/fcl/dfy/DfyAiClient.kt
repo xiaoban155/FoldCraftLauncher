@@ -1,6 +1,7 @@
 package com.tungsten.fcl.dfy
 
 import com.google.gson.JsonArray
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
@@ -11,12 +12,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * 与 OpenAI 兼容接口对话（/chat/completions，流式）。
+ * 与 OpenAI 兼容接口对话（/chat/completions，流式 + function calling）。
  *
  * 健壮性对齐 PC 端：
  *  - 最多尝试 3 次；408 / 409 / 425 / 429 / 5xx 视为可重试，退避后重试；
  *  - 服务端不支持 SSE 时，退回整包 JSON 解析（不会静默卡住）；
- *  - 单行 SSE 解析失败不影响整体，只跳过该行。
+ *  - 单行 SSE 解析失败不影响整体，只跳过该行；
+ *  - 流式里的 tool_calls 分片按 index 拼接，拼完再交给上层执行。
  */
 object DfyAiClient {
 
@@ -24,7 +26,16 @@ object DfyAiClient {
     private const val CONNECT_TIMEOUT = 20_000
     private const val READ_TIMEOUT = 90_000
 
-    data class Msg(val role: String, val content: String)
+    data class ToolCall(val id: String, val name: String, val args: String)
+
+    data class Msg(
+        val role: String,
+        val content: String? = null,
+        val toolCalls: List<ToolCall> = emptyList(),
+        val toolCallId: String? = null
+    )
+
+    data class Reply(val content: String, val toolCalls: List<ToolCall>)
 
     private fun isRetryable(code: Int): Boolean =
         code == 408 || code == 409 || code == 425 || code == 429 || code >= 500
@@ -68,6 +79,7 @@ object DfyAiClient {
         }
     }
 
+    /** 纯对话（不带工具） */
     suspend fun chat(
         baseUrl: String,
         apiKey: String,
@@ -75,6 +87,21 @@ object DfyAiClient {
         messages: List<Msg>,
         onDelta: (String) -> Unit
     ): Result<String> = withContext(Dispatchers.IO) {
+        chatWithTools(baseUrl, apiKey, model, messages, null, onDelta).map { it.content }
+    }
+
+    /**
+     * 一轮对话：支持 tools 描述，返回本轮文本 + 模型请求的工具调用。
+     * onDelta 会在 IO 线程逐块回调，调用方自己切主线程。
+     */
+    suspend fun chatWithTools(
+        baseUrl: String,
+        apiKey: String,
+        model: String,
+        messages: List<Msg>,
+        tools: JsonArray?,
+        onDelta: (String) -> Unit
+    ): Result<Reply> = withContext(Dispatchers.IO) {
         val url = endpoint(baseUrl)
         if (url.isEmpty()) return@withContext Result.failure(IllegalArgumentException("接口地址为空"))
         if (model.isBlank()) return@withContext Result.failure(IllegalArgumentException("模型名为空"))
@@ -95,14 +122,11 @@ object DfyAiClient {
                 val payload = JsonObject().apply {
                     addProperty("model", model)
                     addProperty("stream", true)
-                    add("messages", JsonArray().apply {
-                        messages.forEach { m ->
-                            add(JsonObject().apply {
-                                addProperty("role", m.role)
-                                addProperty("content", m.content)
-                            })
-                        }
-                    })
+                    add("messages", JsonArray().apply { messages.forEach { add(msgToJson(it)) } })
+                    if (tools != null && tools.size() > 0) {
+                        add("tools", tools)
+                        addProperty("tool_choice", "auto")
+                    }
                 }
                 conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
 
@@ -124,7 +148,9 @@ object DfyAiClient {
 
                 val builder = StringBuilder()
                 val raw = StringBuilder()
+                val toolAcc = LinkedHashMap<Int, ToolCallAcc>()
                 var sawSse = false
+
                 conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
                     var line: String? = reader.readLine()
                     while (line != null) {
@@ -135,14 +161,26 @@ object DfyAiClient {
                             val data = trimmed.removePrefix("data:").trim()
                             if (data == "[DONE]") break
                             if (data.isNotEmpty()) {
-                                val piece = try {
-                                    extractDelta(data)
+                                try {
+                                    val obj = JsonParser.parseString(data).asJsonObject
+                                    val choices = obj.getAsJsonArray("choices")
+                                    if (choices != null && choices.size() > 0) {
+                                        val delta = choices[0].asJsonObject.getAsJsonObject("delta")
+                                        if (delta != null) {
+                                            val content = delta.get("content")
+                                            if (content != null && !content.isJsonNull) {
+                                                val piece = content.asString ?: ""
+                                                if (piece.isNotEmpty()) {
+                                                    builder.append(piece)
+                                                    onDelta(piece)
+                                                }
+                                            }
+                                            val tcs = delta.getAsJsonArray("tool_calls")
+                                            if (tcs != null) accumulateToolCalls(tcs, toolAcc)
+                                        }
+                                    }
                                 } catch (e: Exception) {
-                                    ""
-                                }
-                                if (piece.isNotEmpty()) {
-                                    builder.append(piece)
-                                    onDelta(piece)
+                                    // 单行坏了就跳过，不影响整体
                                 }
                             }
                         }
@@ -153,18 +191,31 @@ object DfyAiClient {
 
                 if (!sawSse) {
                     // 服务端忽略了 stream 参数，直接返回完整 JSON
-                    val piece = try {
-                        extractMessage(raw.toString())
+                    try {
+                        val obj = JsonParser.parseString(raw.toString()).asJsonObject
+                        val choices = obj.getAsJsonArray("choices")
+                        if (choices != null && choices.size() > 0) {
+                            val message = choices[0].asJsonObject.getAsJsonObject("message")
+                            if (message != null) {
+                                val content = message.get("content")
+                                if (content != null && !content.isJsonNull) {
+                                    val piece = content.asString ?: ""
+                                    if (piece.isNotEmpty()) {
+                                        builder.append(piece)
+                                        onDelta(piece)
+                                    }
+                                }
+                                val tcs = message.getAsJsonArray("tool_calls")
+                                if (tcs != null) accumulateToolCalls(tcs, toolAcc)
+                            }
+                        }
                     } catch (e: Exception) {
-                        ""
-                    }
-                    if (piece.isNotEmpty()) {
-                        builder.append(piece)
-                        onDelta(piece)
+                        // ignore
                     }
                 }
 
-                if (builder.isEmpty()) {
+                val calls = toolAcc.values.map { it.build() }
+                if (builder.isEmpty() && calls.isEmpty()) {
                     lastError = "接口返回内容为空（请检查模型名和接口地址）"
                     if (attempt < MAX_ATTEMPTS) {
                         delay(700L * attempt)
@@ -172,7 +223,7 @@ object DfyAiClient {
                     }
                     return@withContext Result.failure(IOException(lastError))
                 }
-                return@withContext Result.success(builder.toString())
+                return@withContext Result.success(Reply(builder.toString(), calls))
             } catch (e: Exception) {
                 lastError = e.message ?: e.javaClass.simpleName
                 try {
@@ -188,23 +239,53 @@ object DfyAiClient {
         Result.failure(IOException(lastError.ifEmpty { "请求失败" }))
     }
 
-    private fun extractDelta(data: String): String {
-        val obj = JsonParser.parseString(data).asJsonObject
-        val choices = obj.getAsJsonArray("choices") ?: return ""
-        if (choices.size() == 0) return ""
-        val delta = choices[0].asJsonObject.getAsJsonObject("delta") ?: return ""
-        val content = delta.get("content")
-        if (content == null || content.isJsonNull) return ""
-        return content.asString ?: ""
+    private class ToolCallAcc {
+        var id: String = ""
+        var name: String = ""
+        val args = StringBuilder()
+
+        fun build(): ToolCall = ToolCall(id.ifEmpty { "call_${name.hashCode()}" }, name, args.toString())
     }
 
-    private fun extractMessage(body: String): String {
-        val obj = JsonParser.parseString(body).asJsonObject
-        val choices = obj.getAsJsonArray("choices") ?: return ""
-        if (choices.size() == 0) return ""
-        val message = choices[0].asJsonObject.getAsJsonObject("message") ?: return ""
-        val content = message.get("content")
-        if (content == null || content.isJsonNull) return ""
-        return content.asString ?: ""
+    private fun accumulateToolCalls(arr: JsonArray, acc: MutableMap<Int, ToolCallAcc>) {
+        for (i in 0 until arr.size()) {
+            try {
+                val item = arr[i].asJsonObject
+                val index = item.get("index")?.takeIf { !it.isJsonNull }?.asInt ?: i
+                val slot = acc.getOrPut(index) { ToolCallAcc() }
+                item.get("id")?.takeIf { !it.isJsonNull }?.asString?.let { if (it.isNotEmpty()) slot.id = it }
+                val fn = item.getAsJsonObject("function") ?: continue
+                fn.get("name")?.takeIf { !it.isJsonNull }?.asString?.let { if (it.isNotEmpty()) slot.name = it }
+                fn.get("arguments")?.takeIf { !it.isJsonNull }?.asString?.let { slot.args.append(it) }
+            } catch (e: Exception) {
+                // 跳过坏分片
+            }
+        }
+    }
+
+    private fun msgToJson(m: Msg): JsonObject = JsonObject().apply {
+        addProperty("role", m.role)
+        when {
+            m.role == "tool" -> {
+                addProperty("tool_call_id", m.toolCallId ?: "")
+                addProperty("content", m.content ?: "")
+            }
+            m.toolCalls.isNotEmpty() -> {
+                if (m.content == null) add("content", JsonNull.INSTANCE) else addProperty("content", m.content)
+                add("tool_calls", JsonArray().apply {
+                    m.toolCalls.forEach { tc ->
+                        add(JsonObject().apply {
+                            addProperty("id", tc.id)
+                            addProperty("type", "function")
+                            add("function", JsonObject().apply {
+                                addProperty("name", tc.name)
+                                addProperty("arguments", tc.args)
+                            })
+                        })
+                    }
+                })
+            }
+            else -> addProperty("content", m.content ?: "")
+        }
     }
 }

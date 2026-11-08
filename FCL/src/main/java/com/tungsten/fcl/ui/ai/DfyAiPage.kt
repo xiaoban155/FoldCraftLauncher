@@ -10,12 +10,18 @@ import android.view.ViewGroup
 import android.widget.Toast
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.tungsten.fcl.R
 import com.tungsten.fcl.databinding.ItemDfyAiMsgBinding
 import com.tungsten.fcl.databinding.PageDfyAiBinding
 import com.tungsten.fcl.dfy.DfyAiClient
 import com.tungsten.fcl.dfy.DfyAiStore
+import com.tungsten.fcl.dfy.DfyMotion
+import com.tungsten.fcl.dfy.DfyTools
+import com.tungsten.fcllibrary.component.dialog.FCLAlertDialog
 import com.tungsten.fcllibrary.component.ui.FCLPage
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,8 +29,12 @@ import kotlinx.coroutines.launch
 
 /**
  * 大肥鱼启动器 AI 助手页。
- * 第一版能力：多轮对话 + 流式输出 + 每一步操作可视化（请求/耗时/结果）。
- * 工具层（改设置、联机开关、启动实例）在权限层落地后接入同一套步骤条。
+ *
+ * 能力：
+ *  - 多轮对话 + 流式输出；
+ *  - function calling：AI 可以真的改启动器设置、开关多人联机、启动实例；
+ *  - 每一步都显示在步骤条里（AI 想做什么 / 是否通过审核 / 执行结果）；
+ *  - 写操作一律先弹「权限审核」，用户点允许才执行。
  */
 class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page_dfy_ai) {
 
@@ -35,6 +45,9 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
     private val scope = CoroutineScope(Dispatchers.Main + Job())
     private var running: Job? = null
     private var lastRefreshAt = 0L
+
+    /** 纯文本对话历史（不含工具消息），用于多轮上下文 */
+    private val conversation = ArrayList<DfyAiClient.Msg>()
 
     private data class ChatItem(val role: String, var text: String)
 
@@ -57,6 +70,8 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
             holder.binding.text.text = label + item.text
             holder.binding.text.alpha = if (item.role == "trace") 0.7f else 1f
             holder.binding.text.textSize = if (item.role == "trace") 11f else 14f
+            // 新消息淡入上浮，只有最新一条播动画，滚动回看时不闪
+            if (position == items.size - 1) DfyMotion.fadeInUp(holder.itemView, position == 0)
         }
     }
 
@@ -76,9 +91,13 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
                 return@setOnClickListener
             }
             items.clear()
+            conversation.clear()
             adapter.notifyDataSetChanged()
             addWelcome()
         }
+        DfyMotion.press(binding.send)
+        DfyMotion.press(binding.config)
+        DfyMotion.press(binding.clear)
         refreshStatus()
         addWelcome()
     }
@@ -109,6 +128,10 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
         scrollToBottom()
     }
 
+    private fun addTrace(text: String) {
+        addItem(ChatItem("trace", text))
+    }
+
     private fun scrollToBottom() {
         if (items.isNotEmpty()) binding.list.scrollToPosition(items.size - 1)
     }
@@ -135,51 +158,131 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
 
         binding.input.setText("")
         addItem(ChatItem("user", text))
-        addItem(ChatItem("trace", getContext().getString(R.string.dfy_ai_step_request, data.model)))
-
-        val reply = ChatItem("assistant", "")
-        addItem(reply)
-
-        val history = items
-            .filter { it !== reply && (it.role == "user" || (it.role == "assistant" && it.text.isNotBlank())) }
-            .map {
-                DfyAiClient.Msg(if (it.role == "user") "user" else "assistant", it.text)
-            }
-        val messages = listOf(DfyAiClient.Msg("system", SYSTEM_PROMPT)) + history
+        conversation.add(DfyAiClient.Msg("user", text))
+        addTrace(getContext().getString(R.string.dfy_ai_step_request, data.model))
 
         val startedAt = SystemClock.uptimeMillis()
         running = scope.launch {
-            val result = DfyAiClient.chat(data.baseUrl, key, data.model, messages) { piece ->
-                mainHandler.post {
-                    reply.text += piece
-                    val now = SystemClock.uptimeMillis()
-                    if (now - lastRefreshAt > 120L) {
-                        lastRefreshAt = now
-                        val index = items.indexOf(reply)
-                        if (index >= 0) adapter.notifyItemChanged(index)
-                        scrollToBottom()
+            var finalText = ""
+            var failed = ""
+            try {
+                var round = 0
+                while (round < MAX_TOOL_ROUNDS) {
+                    val msgs = ArrayList(conversation)
+                    val prefix = arrayListOf(DfyAiClient.Msg("system", SYSTEM_PROMPT))
+                    prefix.addAll(msgs)
+
+                    var textItem: ChatItem? = null
+                    val reply = DfyAiClient.chatWithTools(
+                        data.baseUrl, key, data.model, prefix, DfyTools.schemasJson()
+                    ) { piece ->
+                        mainHandler.post {
+                            if (textItem == null) {
+                                val item = ChatItem("assistant", "")
+                                textItem = item
+                                addItem(item)
+                            }
+                            textItem?.text = (textItem?.text ?: "") + piece
+                            val now = SystemClock.uptimeMillis()
+                            if (now - lastRefreshAt > 120L) {
+                                lastRefreshAt = now
+                                textItem?.let {
+                                    val index = items.indexOf(it)
+                                    if (index >= 0) adapter.notifyItemChanged(index)
+                                }
+                                scrollToBottom()
+                            }
+                        }
+                    }.getOrElse {
+                        failed = it.message ?: it.javaClass.simpleName
+                        return@launch
                     }
+
+                    textItem?.let {
+                        val index = items.indexOf(it)
+                        if (index >= 0) adapter.notifyItemChanged(index)
+                    }
+                    finalText = reply.content
+
+                    if (reply.toolCalls.isEmpty()) {
+                        if (finalText.isNotBlank()) conversation.add(DfyAiClient.Msg("assistant", finalText))
+                        break
+                    }
+
+                    // 本轮模型要求调用工具：先把 assistant 的 tool_calls 入历史
+                    prefix.add(DfyAiClient.Msg("assistant", reply.content?.ifBlank { null }, reply.toolCalls))
+                    val assistantMsg = DfyAiClient.Msg("assistant", reply.content?.ifBlank { null }, reply.toolCalls)
+                    conversation.add(assistantMsg)
+
+                    for (call in reply.toolCalls) {
+                        val args = parseArgs(call.args)
+                        val desc = DfyTools.describe(call.name, args)
+                        addTrace(getContext().getString(R.string.dfy_ai_step_tool, desc))
+
+                        var result: String
+                        if (DfyTools.isWriteTool(call.name)) {
+                            val allowed = awaitPermission(desc)
+                            if (!allowed) {
+                                result = "用户拒绝执行这项操作，请改用别的方式或直接说明需要用户手动操作"
+                                addTrace(getContext().getString(R.string.dfy_ai_step_denied, desc))
+                                conversation.add(DfyAiClient.Msg("tool", result, toolCallId = call.id))
+                                continue
+                            }
+                            result = DfyTools.execute(getContext(), call.name, args)
+                            addTrace(getContext().getString(R.string.dfy_ai_step_result, result))
+                        } else {
+                            result = DfyTools.execute(getContext(), call.name, args)
+                            addTrace(getContext().getString(R.string.dfy_ai_step_result, result))
+                        }
+                        conversation.add(DfyAiClient.Msg("tool", result, toolCallId = call.id))
+                    }
+                    round++
                 }
-            }
-            val cost = (SystemClock.uptimeMillis() - startedAt) / 1000.0
-            val index = items.indexOf(reply)
-            if (index >= 0) adapter.notifyItemChanged(index)
-            result.exceptionOrNull()?.let { error ->
-                addItem(ChatItem("trace", getContext().getString(R.string.dfy_ai_step_fail, error.message ?: "")))
-            } ?: run {
-                addItem(
-                    ChatItem(
-                        "trace",
+                if (round >= MAX_TOOL_ROUNDS) {
+                    addTrace(getContext().getString(R.string.dfy_ai_step_round_limit))
+                }
+            } finally {
+                val cost = (SystemClock.uptimeMillis() - startedAt) / 1000.0
+                if (failed.isNotEmpty()) {
+                    addTrace(getContext().getString(R.string.dfy_ai_step_fail, failed))
+                } else {
+                    addTrace(
                         getContext().getString(
                             R.string.dfy_ai_step_done,
                             String.format(java.util.Locale.US, "%.1f", cost),
-                            result.getOrNull()?.length ?: 0
+                            conversation.lastOrNull { it.role == "assistant" }?.content?.length ?: finalText.length
                         )
                     )
-                )
+                }
+                scrollToBottom()
             }
-            scrollToBottom()
         }
+    }
+
+    /** 写操作前弹权限审核；返回用户是否允许 */
+    private suspend fun awaitPermission(desc: String): Boolean {
+        val deferred = CompletableDeferred<Boolean>()
+        mainHandler.post {
+            FCLAlertDialog.Builder(getContext()).apply {
+                setAlertLevel(FCLAlertDialog.AlertLevel.INFO)
+                setTitle(getContext().getString(R.string.dfy_ai_perm_title))
+                setMessage(getContext().getString(R.string.dfy_ai_perm_msg, desc))
+                setCancelable(false)
+                setPositiveButton(getContext().getString(R.string.dfy_ai_perm_allow)) {
+                    if (!deferred.isCompleted) deferred.complete(true)
+                }
+                setNegativeButton(getContext().getString(R.string.dfy_ai_perm_deny)) {
+                    if (!deferred.isCompleted) deferred.complete(false)
+                }
+            }.create().show()
+        }
+        return deferred.await()
+    }
+
+    private fun parseArgs(raw: String): JsonObject = try {
+        if (raw.isBlank()) JsonObject() else JsonParser.parseString(raw).asJsonObject
+    } catch (e: Exception) {
+        JsonObject()
     }
 
     private fun toast(message: String) {
@@ -187,8 +290,14 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
     }
 
     companion object {
+        private const val MAX_TOOL_ROUNDS = 4
+
         private const val SYSTEM_PROMPT =
             "你是「大肥鱼启动器」（DFY Launcher）内置的 AI 助手。启动器是基于 Fold Craft Launcher 二次开发的安卓我的世界启动器。" +
-                "回答要简洁、可执行，涉及启动器操作时给出具体菜单路径。暂时不能自动修改设置或启动游戏，需要时请明确提示用户手动操作。"
+                "你可以通过工具真正修改启动器：读取设置、改下载源/版本列表源/下载线程、开关多人联机、启动指定实例。" +
+                "任何写操作都会弹权限审核给用户确认，用户拒绝时必须如实说明该操作未生效，不要假装成功。" +
+                "需要改设置时直接调用工具，不要只给手动步骤；不确定实例名时先调用 list_instances 核对。" +
+                "自动生成模组/插件在安卓端暂不支持，被问到时明确说明暂不可用。" +
+                "回答简洁、可执行，使用简体中文。"
     }
 }

@@ -1731,5 +1731,13 @@
     <string name="dfy_ai_step_request" translatable="false">▸ 正在请求 %1$s…</string>
     <string name="dfy_ai_step_done" translatable="false">▸ 完成 · 耗时 %1$s 秒 · 输出 %2$d 字</string>
     <string name="dfy_ai_step_fail" translatable="false">▸ 失败 · %1$s</string>
+    <string name="dfy_ai_step_tool" translatable="false">⚙ AI 想执行 · %1$s</string>
+    <string name="dfy_ai_step_result" translatable="false">✔ 已执行 · %1$s</string>
+    <string name="dfy_ai_step_denied" translatable="false">⛔ 已拒绝 · %1$s</string>
+    <string name="dfy_ai_step_round_limit" translatable="false">▸ 操作轮次已达上限，先停在这里</string>
+    <string name="dfy_ai_perm_title" translatable="false">AI 权限审核</string>
+    <string name="dfy_ai_perm_msg" translatable="false">AI 想对启动器做一次修改：\n\n%1$s\n\n点「允许」才会执行，点「拒绝」则这次不改。</string>
+    <string name="dfy_ai_perm_allow" translatable="false">允许</string>
+    <string name="dfy_ai_perm_deny" translatable="false">拒绝</string>
     <string name="dfy_ai_welcome" translatable="false">输入问题后点「发送」。API Key 只存本机 Keystore 加密密文，或仅保留在内存中；不会以明文写入任何文件。</string>
 </resources>
