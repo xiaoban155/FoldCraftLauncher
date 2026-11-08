@@ -19,12 +19,15 @@ import com.tungsten.fcl.dfy.DfyAiClient
 import com.tungsten.fcl.dfy.DfyAiStore
 import com.tungsten.fcl.dfy.DfyMotion
 import com.tungsten.fcl.dfy.DfyTools
+import com.tungsten.fcl.dfy.DfyTrace
 import com.tungsten.fcllibrary.component.dialog.FCLAlertDialog
 import com.tungsten.fcllibrary.component.ui.FCLPage
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
@@ -42,7 +45,15 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
     private val items = ArrayList<ChatItem>()
     private val adapter = MsgAdapter()
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val scope = CoroutineScope(Dispatchers.Main + Job())
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Main + CoroutineExceptionHandler { _, t ->
+            // 兜底：协程里真正逃逸出来的异常也只在日志里出现，不触发进程崩溃
+            try {
+                DfyTrace.step(getContext(), "uncaught", "${t.javaClass.name}: ${t.message}")
+            } catch (ignored: Throwable) {
+            }
+        }
+    )
     private var running: Job? = null
     private var lastRefreshAt = 0L
 
@@ -191,6 +202,7 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
         conversation.add(DfyAiClient.Msg("user", text))
         addTrace(getContext().getString(R.string.dfy_ai_step_request, data.model))
 
+        DfyTrace.step(getContext(), "send", "开始 baseUrl=${data.baseUrl.take(60)} model=${data.model.take(40)} msgs=${conversation.size}")
         val startedAt = SystemClock.uptimeMillis()
         running = scope.launch {
             var finalText = ""
@@ -204,7 +216,8 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
 
                     var textItem: ChatItem? = null
                     val reply = DfyAiClient.chatWithTools(
-                        data.baseUrl, key, data.model, prefix, DfyTools.schemasJson()
+                        data.baseUrl, key, data.model, prefix, DfyTools.schemasJson(),
+                        onTrace = { stage -> DfyTrace.step(getContext(), "round$round", stage) }
                     ) { piece ->
                         mainHandler.post {
                             // 流式回调可能在页面已离开后到达，任何 UI 操作都不能把整个应用带崩
@@ -213,6 +226,7 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
                                     val item = ChatItem("assistant", "")
                                     textItem = item
                                     addItem(item)
+                                    DfyTrace.step(getContext(), "ui", "首个增量已渲染")
                                 }
                                 textItem?.text = (textItem?.text ?: "") + piece
                                 val now = SystemClock.uptimeMillis()
@@ -227,8 +241,10 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
                         }
                     }.getOrElse {
                         failed = it.message ?: it.javaClass.simpleName
+                        DfyTrace.step(getContext(), "round$round", "请求失败 $failed")
                         return@launch
                     }
+                    DfyTrace.step(getContext(), "round$round", "拿到回复 文本=${reply.content.length} 工具=${reply.toolCalls.size}")
 
                     textItem?.let { refreshItem(it) }
                     finalText = reply.content
@@ -244,13 +260,16 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
                     conversation.add(assistantMsg)
 
                     for (call in reply.toolCalls) {
+                        DfyTrace.step(getContext(), "round$round", "工具 ${call.name}")
                         val args = parseArgs(call.args)
                         val desc = DfyTools.describe(call.name, args)
                         addTrace(getContext().getString(R.string.dfy_ai_step_tool, desc))
 
                         var result: String
                         if (DfyTools.isWriteTool(call.name)) {
+                            DfyTrace.step(getContext(), "round$round", "等待权限审核")
                             val allowed = awaitPermission(desc)
+                            DfyTrace.step(getContext(), "round$round", "权限结果 $allowed")
                             if (!allowed) {
                                 result = "用户拒绝执行这项操作，请改用别的方式或直接说明需要用户手动操作"
                                 addTrace(getContext().getString(R.string.dfy_ai_step_denied, desc))
@@ -274,6 +293,7 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
                 // AI 链路任何异常都只在步骤条里显示，不允许把整个启动器带崩
                 failed = t.message ?: t.javaClass.simpleName
             } finally {
+                try {
                 val cost = (SystemClock.uptimeMillis() - startedAt) / 1000.0
                 if (failed.isNotEmpty()) {
                     addTrace(getContext().getString(R.string.dfy_ai_step_fail, failed))
@@ -287,6 +307,9 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
                     )
                 }
                 scrollToBottom()
+                } catch (ignored: Throwable) {
+                }
+                DfyTrace.step(getContext(), "end", "结束 failed=${failed.take(80)}")
             }
         }
     }

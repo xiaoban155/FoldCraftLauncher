@@ -87,7 +87,7 @@ object DfyAiClient {
         messages: List<Msg>,
         onDelta: (String) -> Unit
     ): Result<String> = withContext(Dispatchers.IO) {
-        chatWithTools(baseUrl, apiKey, model, messages, null, onDelta).map { it.content }
+        chatWithTools(baseUrl, apiKey, model, messages, null, null, onDelta).map { it.content }
     }
 
     /**
@@ -100,6 +100,7 @@ object DfyAiClient {
         model: String,
         messages: List<Msg>,
         tools: JsonArray?,
+        onTrace: ((String) -> Unit)? = null,
         onDelta: (String) -> Unit
     ): Result<Reply> = withContext(Dispatchers.IO) {
         val url = endpoint(baseUrl)
@@ -110,6 +111,7 @@ object DfyAiClient {
         for (attempt in 1..MAX_ATTEMPTS) {
             var conn: HttpURLConnection? = null
             try {
+                onTrace?.invoke("请求开始 attempt=$attempt msgs=${messages.size} tools=${tools?.size() ?: 0}")
                 conn = (URL(url).openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     connectTimeout = CONNECT_TIMEOUT
@@ -131,6 +133,7 @@ object DfyAiClient {
                 conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
 
                 val code = conn.responseCode
+                onTrace?.invoke("HTTP $code")
                 if (code !in 200..299) {
                     val body = try {
                         (conn.errorStream ?: conn.inputStream)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
@@ -157,6 +160,7 @@ object DfyAiClient {
                         raw.append(line).append('\n')
                         val trimmed = line.trim()
                         if (trimmed.startsWith("data:")) {
+                            if (!sawSse) onTrace?.invoke("收到首个 SSE 数据行")
                             sawSse = true
                             val data = trimmed.removePrefix("data:").trim()
                             if (data == "[DONE]") break
@@ -187,9 +191,11 @@ object DfyAiClient {
                         line = reader.readLine()
                     }
                 }
+                onTrace?.invoke("收流结束 lines=${raw.length} chars=${builder.length}")
                 conn.disconnect()
 
                 if (!sawSse) {
+                    onTrace?.invoke("非 SSE，尝试整包解析")
                     // 服务端忽略了 stream 参数，直接返回完整 JSON
                     try {
                         val obj = JsonParser.parseString(raw.toString()).asJsonObject
@@ -215,6 +221,7 @@ object DfyAiClient {
                 }
 
                 val calls = toolAcc.values.map { it.build() }
+                onTrace?.invoke("返回 文本=${builder.length} 工具调用=${calls.size}")
                 if (builder.isEmpty() && calls.isEmpty()) {
                     lastError = "接口返回内容为空（请检查模型名和接口地址）"
                     if (attempt < MAX_ATTEMPTS) {
@@ -226,6 +233,7 @@ object DfyAiClient {
                 return@withContext Result.success(Reply(builder.toString(), calls))
             } catch (e: Exception) {
                 lastError = e.message ?: e.javaClass.simpleName
+                onTrace?.invoke("异常 ${e.javaClass.simpleName}: ${e.message?.take(120)}")
                 try {
                     conn?.disconnect()
                 } catch (ignored: Exception) {
