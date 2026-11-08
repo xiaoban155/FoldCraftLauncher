@@ -79,6 +79,16 @@
             app:layout_constraintTop_toBottomOf="@id/controller" />
 
         <com.tungsten.fcllibrary.component.view.FCLMenuView
+            android:id="@+id/ai"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:src="@drawable/ic_baseline_smart_toy_24"
+            app:layout_constraintBottom_toTopOf="@id/setting"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/multiplayer" />
+
+        <com.tungsten.fcllibrary.component.view.FCLMenuView
             android:id="@+id/setting"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -86,7 +96,7 @@
             android:src="@drawable/ic_baseline_settings_24"
             app:layout_constraintBottom_toTopOf="@id/back"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@id/multiplayer" />
+            app:layout_constraintTop_toBottomOf="@id/ai" />
 
         <com.tungsten.fcllibrary.component.view.FCLMenuView
             android:id="@+id/back"

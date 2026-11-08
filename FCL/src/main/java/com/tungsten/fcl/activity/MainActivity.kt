@@ -294,7 +294,7 @@ class MainActivity : FCLActivity(), OnSelectListener, View.OnClickListener {
                     }
                 }
                 // 点击左侧菜单项：始终播放选中动画（已选中时重复点击也能触发），选中与切换逻辑沿用 setSelected
-                listOf(home, manage, download, controller, multiplayer, setting).forEach { menu ->
+                listOf(home, manage, download, controller, multiplayer, ai, setting).forEach { menu ->
                     menu.setOnClickListener {
                         playMenuAnim(menu)
                         menu.setSelected(true)
@@ -305,6 +305,7 @@ class MainActivity : FCLActivity(), OnSelectListener, View.OnClickListener {
                 download.setOnSelectListener(this@MainActivity)
                 controller.setOnSelectListener(this@MainActivity)
                 multiplayer.setOnSelectListener(this@MainActivity)
+                ai.setOnSelectListener(this@MainActivity)
                 setting.setOnSelectListener(this@MainActivity)
                 home.setSelected(true)
                 home.setOnLongClickListener {
@@ -635,6 +636,13 @@ class MainActivity : FCLActivity(), OnSelectListener, View.OnClickListener {
                 setting -> {
                     title.setTextWithAnim(getString(R.string.setting))
                     uiManager.switchUI(uiManager.settingUI)
+                }
+
+                ai -> {
+                    // 左侧菜单的 AI 入口：直接打开设置页并切到「AI 助手」Tab
+                    title.setTextWithAnim(getString(R.string.dfy_ai_tab_title))
+                    uiManager.switchUI(uiManager.settingUI)
+                    uiManager.settingUI.tabLayout.getTabAt(4)?.select()
                 }
             }
         }
@@ -1134,7 +1142,7 @@ class MainActivity : FCLActivity(), OnSelectListener, View.OnClickListener {
                 objectAnimator.interpolator(BounceInterpolator()).startAfter((index + 1) * 100L)
             }
             AnimUtil.playTranslationY(
-                listOf(home, manage, download, controller, multiplayer, setting, back),
+                listOf(home, manage, download, controller, multiplayer, ai, setting, back),
                 speed * 100L,
                 -300f,
                 0f
@@ -1142,7 +1150,7 @@ class MainActivity : FCLActivity(), OnSelectListener, View.OnClickListener {
                 objectAnimator.interpolator(BounceInterpolator()).startAfter((index + 1) * 100L)
             }
             AnimUtil.playTranslationX(
-                listOf(home, manage, download, controller, multiplayer, setting, back),
+                listOf(home, manage, download, controller, multiplayer, ai, setting, back),
                 speed * 100L,
                 -100f,
                 0f

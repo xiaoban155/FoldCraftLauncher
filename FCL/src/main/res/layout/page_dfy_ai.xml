@@ -49,8 +49,10 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
+        android:background="@drawable/bg_container_white"
         android:gravity="center_vertical"
-        android:orientation="horizontal">
+        android:orientation="horizontal"
+        android:padding="4dp">
 
         <com.tungsten.fcllibrary.component.view.FCLEditText
             android:id="@+id/input"
