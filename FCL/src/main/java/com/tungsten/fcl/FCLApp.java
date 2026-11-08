@@ -35,6 +35,14 @@ public class FCLApp extends Application implements Application.ActivityLifecycle
         // enabledStrictMode();
         super.onCreate();
         this.registerActivityLifecycleCallbacks(this);
+        // 大肥鱼：ContentProvider（含 FCL 自带的 CrashReporterInitProvider）在 attachBaseContext 之后、
+        // onCreate 之前安装，会覆盖掉我们前面的 handler。这里再装一次，确保我们是最后一道，
+        // 崩溃时先落盘真实堆栈，再交回 FCL 自带的崩溃上报处理。
+        try {
+            com.tungsten.fcl.dfy.DfyCrashLog.install(this);
+        } catch (Throwable ignored) {
+            // 记录器自身异常不能影响启动
+        }
 //        PerfUtil.install();
     }
 

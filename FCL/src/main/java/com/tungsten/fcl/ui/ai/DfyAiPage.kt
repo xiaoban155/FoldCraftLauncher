@@ -60,7 +60,7 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
     /** 纯文本对话历史（不含工具消息），用于多轮上下文 */
     private val conversation = ArrayList<DfyAiClient.Msg>()
 
-    private data class ChatItem(val role: String, var text: String)
+    private data class ChatItem(val role: String, var text: String, var animateOnBind: Boolean = true)
 
     private inner class MsgAdapter : RecyclerView.Adapter<MsgAdapter.Holder>() {
 
@@ -81,8 +81,14 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
             holder.binding.text.text = label + item.text
             holder.binding.text.alpha = if (item.role == "trace") 0.7f else 1f
             holder.binding.text.textSize = if (item.role == "trace") 11f else 14f
-            // 新消息淡入上浮，只有最新一条播动画，滚动回看时不闪
-            if (position == items.size - 1) DfyMotion.fadeInUp(holder.itemView, position == 0)
+            // 新消息淡入上浮：同一条只播一次，滚动回看不重播
+            if (item.animateOnBind) {
+                item.animateOnBind = false
+                DfyMotion.fadeInUp(holder.itemView, position == 0)
+            } else {
+                holder.itemView.alpha = 1f
+                holder.itemView.translationY = 0f
+            }
         }
     }
 
@@ -93,6 +99,9 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
     private fun create() {
         binding = PageDfyAiBinding.bind(contentView)
         binding.list.layoutManager = LinearLayoutManager(getContext()).apply { stackFromEnd = true }
+        // 流式输出时高频刷新，ItemAnimator 会让 RecyclerView 在动画期间重排，
+        // 极易触发内部 "Inconsistency detected" 崩溃（该异常在布局过程中抛出，外部 try/catch 拦不到）
+        binding.list.itemAnimator = null
         binding.list.adapter = adapter
         binding.send.setOnClickListener { send() }
         binding.config.setOnClickListener { openConfig() }
@@ -147,6 +156,25 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
             }
         }
         scrollToBottom()
+    }
+
+    /**
+     * 流式更新：优先直接改绑定中的 ViewHolder 文本（零布局、零动画、零崩溃风险）；
+     * 找不到绑定（例如被滚出屏幕）时退化为 notifyItemChanged。
+     */
+    private fun updateLiveText(item: ChatItem) {
+        val index = items.indexOf(item)
+        if (index < 0) return
+        try {
+            val holder = binding.list.findViewHolderForAdapterPosition(index) as? MsgAdapter.Holder
+            if (holder != null) {
+                val label = if (item.role == "user") holder.itemView.context.getString(R.string.dfy_ai_me_prefix) else ""
+                holder.binding.text.text = label + item.text
+                return
+            }
+        } catch (ignored: Throwable) {
+        }
+        refreshItem(item)
     }
 
     /** 单条刷新：页面元素已不存在或 RecyclerView 忙时就跳过，绝不向外抛 */
@@ -232,7 +260,9 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
                                 val now = SystemClock.uptimeMillis()
                                 if (now - lastRefreshAt > 120L) {
                                     lastRefreshAt = now
-                                    textItem?.let { refreshItem(it) }
+                                    // 关键：直接写已绑定的 ViewHolder，绝不 notifyItemChanged，
+                                    // 避免 RecyclerView 在布局/动画期间状态不一致而崩
+                                    textItem?.let { updateLiveText(it) }
                                     scrollToBottom()
                                 }
                             } catch (ignored: Throwable) {
