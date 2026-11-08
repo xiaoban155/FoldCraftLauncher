@@ -124,16 +124,46 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
 
     private fun addItem(item: ChatItem) {
         items.add(item)
-        adapter.notifyItemInserted(items.size - 1)
+        try {
+            adapter.notifyItemInserted(items.size - 1)
+        } catch (ignored: Throwable) {
+            // RecyclerView 正在计算布局时可能抛出 IllegalStateException，降级为全量刷新
+            mainHandler.post {
+                try {
+                    adapter.notifyDataSetChanged()
+                } catch (ignored2: Throwable) {
+                }
+            }
+        }
         scrollToBottom()
     }
 
+    /** 单条刷新：页面元素已不存在或 RecyclerView 忙时就跳过，绝不向外抛 */
+    private fun refreshItem(item: ChatItem) {
+        val index = items.indexOf(item)
+        if (index < 0) return
+        try {
+            adapter.notifyItemChanged(index)
+        } catch (ignored: Throwable) {
+            try {
+                adapter.notifyDataSetChanged()
+            } catch (ignored2: Throwable) {
+            }
+        }
+    }
+
     private fun addTrace(text: String) {
-        addItem(ChatItem("trace", text))
+        try {
+            addItem(ChatItem("trace", text))
+        } catch (ignored: Throwable) {
+        }
     }
 
     private fun scrollToBottom() {
-        if (items.isNotEmpty()) binding.list.scrollToPosition(items.size - 1)
+        try {
+            if (items.isNotEmpty()) binding.list.scrollToPosition(items.size - 1)
+        } catch (ignored: Throwable) {
+        }
     }
 
     private fun send() {
@@ -177,20 +207,22 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
                         data.baseUrl, key, data.model, prefix, DfyTools.schemasJson()
                     ) { piece ->
                         mainHandler.post {
-                            if (textItem == null) {
-                                val item = ChatItem("assistant", "")
-                                textItem = item
-                                addItem(item)
-                            }
-                            textItem?.text = (textItem?.text ?: "") + piece
-                            val now = SystemClock.uptimeMillis()
-                            if (now - lastRefreshAt > 120L) {
-                                lastRefreshAt = now
-                                textItem?.let {
-                                    val index = items.indexOf(it)
-                                    if (index >= 0) adapter.notifyItemChanged(index)
+                            // 流式回调可能在页面已离开后到达，任何 UI 操作都不能把整个应用带崩
+                            try {
+                                if (textItem == null) {
+                                    val item = ChatItem("assistant", "")
+                                    textItem = item
+                                    addItem(item)
                                 }
-                                scrollToBottom()
+                                textItem?.text = (textItem?.text ?: "") + piece
+                                val now = SystemClock.uptimeMillis()
+                                if (now - lastRefreshAt > 120L) {
+                                    lastRefreshAt = now
+                                    textItem?.let { refreshItem(it) }
+                                    scrollToBottom()
+                                }
+                            } catch (ignored: Throwable) {
+                                // 刷 UI 失败不影响请求本身
                             }
                         }
                     }.getOrElse {
@@ -198,10 +230,7 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
                         return@launch
                     }
 
-                    textItem?.let {
-                        val index = items.indexOf(it)
-                        if (index >= 0) adapter.notifyItemChanged(index)
-                    }
+                    textItem?.let { refreshItem(it) }
                     finalText = reply.content
 
                     if (reply.toolCalls.isEmpty()) {
@@ -241,6 +270,9 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
                 if (round >= MAX_TOOL_ROUNDS) {
                     addTrace(getContext().getString(R.string.dfy_ai_step_round_limit))
                 }
+            } catch (t: Throwable) {
+                // AI 链路任何异常都只在步骤条里显示，不允许把整个启动器带崩
+                failed = t.message ?: t.javaClass.simpleName
             } finally {
                 val cost = (SystemClock.uptimeMillis() - startedAt) / 1000.0
                 if (failed.isNotEmpty()) {
@@ -263,18 +295,23 @@ class DfyAiPage(context: Context?, id: Int) : FCLPage(context, id, R.layout.page
     private suspend fun awaitPermission(desc: String): Boolean {
         val deferred = CompletableDeferred<Boolean>()
         mainHandler.post {
-            FCLAlertDialog.Builder(getContext()).apply {
-                setAlertLevel(FCLAlertDialog.AlertLevel.INFO)
-                setTitle(getContext().getString(R.string.dfy_ai_perm_title))
-                setMessage(getContext().getString(R.string.dfy_ai_perm_msg, desc))
-                setCancelable(false)
-                setPositiveButton(getContext().getString(R.string.dfy_ai_perm_allow)) {
-                    if (!deferred.isCompleted) deferred.complete(true)
-                }
-                setNegativeButton(getContext().getString(R.string.dfy_ai_perm_deny)) {
-                    if (!deferred.isCompleted) deferred.complete(false)
-                }
-            }.create().show()
+            try {
+                FCLAlertDialog.Builder(getContext()).apply {
+                    setAlertLevel(FCLAlertDialog.AlertLevel.INFO)
+                    setTitle(getContext().getString(R.string.dfy_ai_perm_title))
+                    setMessage(getContext().getString(R.string.dfy_ai_perm_msg, desc))
+                    setCancelable(false)
+                    setPositiveButton(getContext().getString(R.string.dfy_ai_perm_allow)) {
+                        if (!deferred.isCompleted) deferred.complete(true)
+                    }
+                    setNegativeButton(getContext().getString(R.string.dfy_ai_perm_deny)) {
+                        if (!deferred.isCompleted) deferred.complete(false)
+                    }
+                }.create().show()
+            } catch (t: Throwable) {
+                // 弹不出审核框时按「拒绝」处理，绝不默认放行
+                if (!deferred.isCompleted) deferred.complete(false)
+            }
         }
         return deferred.await()
     }
