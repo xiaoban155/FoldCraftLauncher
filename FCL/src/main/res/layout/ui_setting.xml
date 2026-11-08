@@ -50,6 +50,12 @@
                 android:icon="@drawable/ic_baseline_info_24"
                 android:text="@string/about"/>
 
+            <com.google.android.material.tabs.TabItem
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:icon="@drawable/ic_baseline_smart_toy_24"
+                android:text="@string/dfy_ai_tab_title"/>
+
         </com.tungsten.fcllibrary.component.view.FCLTabLayout>
 
     </com.mio.ui.widget.FCLAppBarLayout>

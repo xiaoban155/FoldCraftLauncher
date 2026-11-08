@@ -4,6 +4,7 @@ import android.content.Context;
 
 import com.tungsten.fcl.R;
 import com.tungsten.fcl.setting.Profiles;
+import com.tungsten.fcl.ui.ai.DfyAiPage;
 import com.tungsten.fcl.ui.manage.VersionSettingPage;
 import com.tungsten.fclcore.task.Task;
 import com.tungsten.fcllibrary.component.ui.FCLMultiPageUI;
@@ -17,6 +18,7 @@ public class SettingUI extends FCLMultiPageUI {
     public static final int PAGE_ID_SETTING_LAUNCHER = 15031;
     public static final int PAGE_ID_SETTING_PLUGIN = 15032;
     public static final int PAGE_ID_SETTING_ABOUT = 15034;
+    public static final int PAGE_ID_SETTING_AI = 15035;
 
     private FCLUILayout container;
     public FCLTabLayout tabLayout;
@@ -36,7 +38,7 @@ public class SettingUI extends FCLMultiPageUI {
 
     @Override
     public int getPageCount() {
-        return 4;
+        return 5;
     }
 
     @Override
@@ -48,6 +50,8 @@ public class SettingUI extends FCLMultiPageUI {
                 return new PluginManagePage(getContext(), PAGE_ID_SETTING_PLUGIN);
             case 3:
                 return new AboutPage(getContext(), PAGE_ID_SETTING_ABOUT);
+            case 4:
+                return new DfyAiPage(getContext(), PAGE_ID_SETTING_AI);
             default:
                 return new VersionSettingPage(getContext(), PAGE_ID_SETTING_GAME, true);
         }
@@ -59,7 +63,8 @@ public class SettingUI extends FCLMultiPageUI {
                 getContext().getString(R.string.settings_type_global_manage),
                 getContext().getString(R.string.settings_launcher),
                 getContext().getString(R.string.settings_plugin),
-                getContext().getString(R.string.about)
+                getContext().getString(R.string.about),
+                getContext().getString(R.string.dfy_ai_tab_title)
         };
     }
 

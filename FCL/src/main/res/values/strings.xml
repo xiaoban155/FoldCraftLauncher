@@ -1703,4 +1703,33 @@
     <string name="quark_promo_message">This is your %1$dth game launch!\n\nIf FCL has been helpful to you, feel free to take a moment to open Quark Drive, sign up or log in and tap the Save to Drive button (no download needed). It would mean a lot to us. Thank you so much!</string>
     <string name="quark_promo_open">Open Quark Drive</string>
     <string name="quark_promo_start">Start Game</string>
+    <string name="dfy_ai_tab_title" translatable="false">AI 助手</string>
+    <string name="dfy_ai_config" translatable="false">模型设置</string>
+    <string name="dfy_ai_clear" translatable="false">清空对话</string>
+    <string name="dfy_ai_hint" translatable="false">问我点什么…</string>
+    <string name="dfy_ai_send" translatable="false">发送</string>
+    <string name="dfy_ai_busy" translatable="false">正在生成，请稍候</string>
+    <string name="dfy_ai_me_prefix" translatable="false">我：</string>
+    <string name="dfy_ai_unconfigured" translatable="false">未配置模型</string>
+    <string name="dfy_ai_model_none" translatable="false">未选择</string>
+    <string name="dfy_ai_status_fmt" translatable="false">模型 %1$s · 密钥 %2$s</string>
+    <string name="dfy_ai_key_tag_saved" translatable="false">已加密保存</string>
+    <string name="dfy_ai_key_tag_session" translatable="false">仅本次会话</string>
+    <string name="dfy_ai_key_tag_none" translatable="false">未填写</string>
+    <string name="dfy_ai_config_title" translatable="false">AI 模型设置</string>
+    <string name="dfy_ai_base_url" translatable="false">接口地址（OpenAI 兼容，如 https://api.example.com/v1）</string>
+    <string name="dfy_ai_api_key" translatable="false">API Key</string>
+    <string name="dfy_ai_model" translatable="false">模型名（如 gpt-4o-mini、glm-4）</string>
+    <string name="dfy_ai_save_key" translatable="false">用 Keystore 加密保存在本机</string>
+    <string name="dfy_ai_key_saved" translatable="false">当前已保存密钥：Keystore 加密密文，换机或清数据后需重新填写</string>
+    <string name="dfy_ai_key_empty" translatable="false">当前没有保存密钥</string>
+    <string name="dfy_ai_fetch_models" translatable="false">获取模型列表</string>
+    <string name="dfy_ai_models_failed" translatable="false">没拿到模型列表，请检查地址和 Key</string>
+    <string name="dfy_ai_models_found" translatable="false">取到 %1$d 个模型，第一个是 %2$s，已帮你填上（可自行改）</string>
+    <string name="dfy_ai_need_config" translatable="false">请先填写接口地址和模型名</string>
+    <string name="dfy_ai_need_key" translatable="false">请先填写 API Key</string>
+    <string name="dfy_ai_step_request" translatable="false">▸ 正在请求 %1$s…</string>
+    <string name="dfy_ai_step_done" translatable="false">▸ 完成 · 耗时 %1$s 秒 · 输出 %2$d 字</string>
+    <string name="dfy_ai_step_fail" translatable="false">▸ 失败 · %1$s</string>
+    <string name="dfy_ai_welcome" translatable="false">输入问题后点「发送」。API Key 只存本机 Keystore 加密密文，或仅保留在内存中；不会以明文写入任何文件。</string>
 </resources>
